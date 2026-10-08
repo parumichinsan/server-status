@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>server-status</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <div class="prompt">~$ status --watch<span class="cursor"></span></div>
+    <h1>server status</h1>
+
+    <div class="notice" id="notice" hidden></div>
+
+    {% if status.maintenance_log %}
+    <section>
+      <h2>maintenance log</h2>
+      {% for entry in status.maintenance_log %}
+      <div class="row"><span class="value">{{ entry }}</span></div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% for group in status.groups %}
+    <section>
+      <h2>{{ group.title }}</h2>
+      {% for item in group["items"] %}
+      <div class="status-row">
+        <span class="dot {{ item.state }}" id="{{ item.id }}-dot"></span>
+        <span class="label">{{ item.label }}</span>
+        <span class="status-text {{ item.state }}" id="{{ item.id }}-text">{{ item.state }}</span>
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+
+    <section>
+      <h2>system &amp; power</h2>
+
+      <div class="metric">
+        <div class="metric-top">
+          <span class="label">cpu</span>
+          <span class="value" id="cpu-value">{{ status.server.cpu_percent }}%</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="cpu-bar" style="width: {{ status.server.cpu_percent }}%;"></div></div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-top">
+          <span class="label">memory</span>
+          <span class="value" id="mem-value">{{ status.server.memory_used_gb }} / {{ status.server.memory_total_gb }} GB</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="mem-bar" style="width: {{ status.server.memory_percent }}%;"></div></div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-top">
+          <span class="label">disk</span>
+          <span class="value" id="disk-value">{{ status.server.disk_used_gb }} / {{ status.server.disk_total_gb }} GB</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="disk-bar" style="width: {{ status.server.disk_percent }}%;"></div></div>
+      </div>
+
+      <div class="row">
+        <span class="label">uptime</span>
+        <span class="value" id="uptime-value">{{ status.server.uptime_hours }}h</span>
+      </div>
+
+      <div class="row">
+        <span class="label">power</span>
+        <span class="value" id="power-w-value">{{ status.power.current_w }}W</span>
+      </div>
+
+      <div class="row">
+        <span class="label">today's cost</span>
+        <span class="value" id="power-cost-value">¥{{ status.power.today_cost }}</span>
+      </div>
+    </section>
+
+    <div class="updated">updated <span id="updated-at"></span></div>
+  </div>
+
+  <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
