@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server-status = "server_status:main"
+server-status = "server_status.server_status:main"
 
 [build-system]
 requires = ["uv_build>=0.12.22,<0.13.0"]
