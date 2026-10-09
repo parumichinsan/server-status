@@ -7,6 +7,7 @@
 import os
 import re
 import socket
+import struct
 import subprocess
 import threading
 import time
@@ -21,7 +22,9 @@ app = Flask(__name__)
 
 # ================= 設定 =================
 BIND = os.environ.get("STATUS_BIND", "127.0.0.1:8001")
-SAMPLE_INTERVAL = 3  # 秒。状態を集め直す間隔
+SAMPLE_INTERVAL = 1  # 秒。CPU・メモリ・電力を集め直す間隔
+SERVICE_INTERVAL = 10  # 秒。サービスの稼働確認(プロセス起動を伴うので間隔を空ける)
+VPN_CONN_INTERVAL = 60  # 秒。swanctl(sudo 経由)の確認。接続定義はめったに変わらないので長め
 
 SERVER_IP = "192.168.0.10"
 SWANCTL = "/usr/sbin/swanctl"
@@ -75,8 +78,26 @@ MAINTENANCE_LOG_PATH = Path(
 BOOT_TIME = psutil.boot_time()
 
 
+_cpu_prev = None
+
+
+def get_cpu_percent():
+    """全CPUの使用率(%)。/proc/stat の前回との差から htop と同じ式で出す。
+    busy = 合計 - idle - iowait。guest 系は user/nice に含まれているので足さない。
+    サンプリングスレッドからだけ呼ぶ(前回値をプロセス内で1つだけ持つため)。"""
+    global _cpu_prev
+    with open("/proc/stat") as f:
+        user, nice, system, idle, iowait, irq, softirq, steal = map(int, f.readline().split()[1:9])
+    total = user + nice + system + idle + iowait + irq + softirq + steal
+    cur = (total - idle - iowait, total)
+    prev, _cpu_prev = _cpu_prev, cur
+    if prev is None or cur[1] <= prev[1]:
+        return 0.0
+    return round(100.0 * (cur[0] - prev[0]) / (cur[1] - prev[1]), 1)
+
+
 def get_server_stats():
-    cpu_percent = psutil.cpu_percent(interval=None)  # 前回呼び出しからの平均。待たない
+    cpu_percent = get_cpu_percent()  # 前回呼び出しからの平均。待たない
     cpu_freq = psutil.cpu_freq()
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -94,28 +115,51 @@ def get_server_stats():
 
 
 # ================= サービス稼働確認(True / False / None=判定不能) =================
-def check_systemd(name):
+def check_systemd_batch(names):
+    """systemctl を1回だけ呼んで {名前: True/False/None} を返す。"""
+    if not names:
+        return {}
     try:
-        r = subprocess.run(["systemctl", "is-active", name],
-                           capture_output=True, text=True, timeout=3)
-        return r.stdout.strip() == "active"
+        r = subprocess.run(["systemctl", "is-active", *names],
+                           capture_output=True, text=True, timeout=5)
     except Exception:
-        return None
+        return {n: None for n in names}
+    states = r.stdout.split()  # 引数と同じ順に1行ずつ返る
+    if len(states) != len(names):
+        return {n: None for n in names}
+    return {n: state == "active" for n, state in zip(names, states)}
 
 
-def is_port_listening(host, port, proto="tcp"):
-    kind = "tcp" if proto == "tcp" else "udp"
-    try:
-        for conn in psutil.net_connections(kind=kind):
-            if not conn.laddr or conn.laddr.port != port:
+def read_listeners():
+    """/proc/net から待ち受け中のソケットを読む。{"tcp": {(ip, port)}, "udp": {...}}。
+    psutil.net_connections は全プロセスの fd を走査して重いので使わない。読めなければ None。"""
+    result = {"tcp": set(), "udp": set()}
+    readable = False
+    for proto, files, want in (("tcp", ("tcp", "tcp6"), "0A"), ("udp", ("udp", "udp6"), "07")):
+        for name in files:
+            try:
+                with open(f"/proc/net/{name}") as f:
+                    lines = f.read().splitlines()[1:]
+            except OSError:
                 continue
-            if conn.laddr.ip not in (host, "0.0.0.0", "::"):
-                continue
-            if proto != "tcp" or conn.status == psutil.CONN_LISTEN:
-                return True
-        return False
-    except Exception:
+            readable = True
+            for line in lines:
+                cols = line.split()
+                if len(cols) < 4 or cols[3] != want:
+                    continue
+                addr_hex, port_hex = cols[1].rsplit(":", 1)
+                if len(addr_hex) == 8:  # IPv4(リトルエンディアン)
+                    ip = socket.inet_ntoa(struct.pack("<I", int(addr_hex, 16)))
+                else:  # IPv6。全部0なら待ち受け(::)、それ以外は照合しない
+                    ip = "::" if int(addr_hex, 16) == 0 else addr_hex
+                result[proto].add((ip, int(port_hex, 16)))
+    return result if readable else None
+
+
+def is_listening(listeners, host, port, proto):
+    if listeners is None:
         return None
+    return any(p == port and ip in (host, "0.0.0.0", "::") for ip, p in listeners[proto])
 
 
 def check_tcp(host, port):
@@ -139,18 +183,19 @@ def get_loaded_vpn_conns():
     return set(re.findall(r"^(\S+): IKEv[12]", r.stdout, re.M))
 
 
-def run_check(item, states, vpn_loaded):
+def run_check(item, ctx):
     kind = item["check"]
     if kind == "systemd":
-        return check_systemd(item["name"])
+        return ctx["systemd"].get(item["name"])
     if kind == "listen":
-        return is_port_listening(item["host"], item["port"], item["proto"])
+        return is_listening(ctx["listeners"], item["host"], item["port"], item["proto"])
     if kind == "tcp":
         return check_tcp(item["host"], item["port"])
     if kind == "vpn_conn":
-        if states.get(VPN_SERVICE_ID) == "down":
+        if ctx["states"].get(VPN_SERVICE_ID) == "down":
             return False
-        return None if vpn_loaded is None else item["name"] in vpn_loaded
+        loaded = ctx["vpn_loaded"]
+        return None if loaded is None else item["name"] in loaded
     return None
 
 
@@ -221,28 +266,55 @@ def get_maintenance_log():
 
 
 # ================= 状態の収集(バックグラウンド) =================
+_service_t = 0.0
+_service_groups = []
+_vpn_loaded = None
+_vpn_loaded_t = 0.0
+
+
+def get_vpn_loaded_cached():
+    """sudo を毎回呼ぶと重く、ログも増えるので VPN_CONN_INTERVAL ごとにだけ呼ぶ。"""
+    global _vpn_loaded, _vpn_loaded_t
+    if time.time() - _vpn_loaded_t >= VPN_CONN_INTERVAL:
+        _vpn_loaded = get_loaded_vpn_conns()
+        _vpn_loaded_t = time.time()
+    return _vpn_loaded
+
+
+def collect_services():
+    items = [i for g in GROUPS for i in g["items"]]
+    ctx = {
+        "systemd": check_systemd_batch([i["name"] for i in items if i["check"] == "systemd"]),
+        "listeners": read_listeners(),
+        "vpn_loaded": get_vpn_loaded_cached() if any(i["check"] == "vpn_conn" for i in items) else None,
+        "states": {},
+    }
+    groups = []
+    for g in GROUPS:
+        out = []
+        for it in g["items"]:
+            result = run_check(it, ctx)
+            state = "unknown" if result is None else ("up" if result else "down")
+            ctx["states"][it["id"]] = state
+            out.append({"id": it["id"], "label": it["label"], "state": state})
+        groups.append({"title": g["title"], "items": out})
+    return groups
+
+
 def build_status():
+    global _service_t, _service_groups
     stats = get_server_stats()
     power = get_power_estimate(stats["cpu_percent"], stats["freq_mhz"])
-    has_vpn = any(i["check"] == "vpn_conn" for g in GROUPS for i in g["items"])
-    vpn_loaded = get_loaded_vpn_conns() if has_vpn else None
-
-    states, groups = {}, []
-    for g in GROUPS:
-        items = []
-        for it in g["items"]:
-            result = run_check(it, states, vpn_loaded)
-            state = "unknown" if result is None else ("up" if result else "down")
-            states[it["id"]] = state
-            items.append({"id": it["id"], "label": it["label"], "state": state})
-        groups.append({"title": g["title"], "items": items})
-
+    now = time.time()
+    if now - _service_t >= SERVICE_INTERVAL:
+        _service_groups = collect_services()
+        _service_t = now
     return {
         "server": stats,
         "power": power,
-        "groups": groups,
+        "groups": _service_groups,
         "maintenance_log": get_maintenance_log(),
-        "updated_at": time.time(),
+        "updated_at": now,
     }
 
 
@@ -268,7 +340,7 @@ def start_sampler():
         if _sampler_started:
             return
         _sampler_started = True
-        psutil.cpu_percent(interval=None)  # 基準点を作る
+        get_cpu_percent()  # 基準点を作る
         time.sleep(0.2)
         _snapshot = build_status()
         threading.Thread(target=fetch_kansai_rate, daemon=True).start()

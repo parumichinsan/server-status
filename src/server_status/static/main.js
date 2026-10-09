@@ -1,5 +1,5 @@
 const API_URL = "/api/status";
-const POLL_MS = 3000;
+const POLL_MS = 1000;
 const STALE_SEC = 30;
 
 const $ = (id) => document.getElementById(id);
