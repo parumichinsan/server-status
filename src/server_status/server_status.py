@@ -22,7 +22,7 @@ app = Flask(__name__)
 
 # ================= 設定 =================
 BIND = os.environ.get("STATUS_BIND", "127.0.0.1:8001")
-SAMPLE_INTERVAL = 1.5  # 秒。CPU・メモリ・電力を集め直す間隔
+SAMPLE_INTERVAL = 1# 秒。CPU・メモリ・電力を集め直す間隔
 SERVICE_INTERVAL = 10  # 秒。サービスの稼働確認(プロセス起動を伴うので間隔を空ける)
 VPN_CONN_INTERVAL = 60  # 秒。swanctl(sudo 経由)の確認。接続定義はめったに変わらないので長め
 

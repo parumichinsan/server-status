@@ -114,15 +114,22 @@ section h2 {
 .status-row:last-child { border-bottom: none; }
 
 .dot {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.dot.up {
+/* 脈打つ輪は opacity だけを動かす(box-shadow を動かすと毎フレーム再描画になり、ブラウザのCPUを食う) */
+.dot.up { background: var(--up); }
+.dot.up::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
   background: var(--up);
-  box-shadow: 0 0 0 3px rgba(26, 127, 55, 0.15);
+  opacity: 0.15;
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -130,8 +137,8 @@ section h2 {
 .dot.unknown { background: var(--unknown); }
 
 @keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(26, 127, 55, 0.15); }
-  50% { box-shadow: 0 0 0 5px rgba(26, 127, 55, 0.08); }
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.05; }
 }
 
 .status-text { color: var(--muted); margin-left: auto; }
@@ -155,5 +162,5 @@ section h2 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .prompt .cursor, .dot.up { animation: none; }
+  .prompt .cursor, .dot.up::after { animation: none; }
 }
